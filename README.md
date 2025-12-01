@@ -2,6 +2,31 @@
 
 A secure Rust-based tool for bidirectional communication between your terminal and Windows PowerShell, with built-in encryption for sensitive data like environment variables.
 
+## Quick Start
+
+**Want to get started immediately? See [QUICKSTART.md](QUICKSTART.md)**
+
+### Simple Setup (3 commands)
+
+```bash
+# 1. Install and build everything
+./install.sh
+
+# 2. Start the server (in one terminal)
+./run_server.sh
+
+# 3. Send data from client (in another terminal)
+./run_client.sh send "Hello World"
+```
+
+### Auto-start on macOS
+
+```bash
+./setup_autostart.sh
+```
+
+After this, the server runs automatically on login and restarts if it crashes.
+
 ## Features
 
 - **Secure Communication**: All data encrypted using ChaCha20-Poly1305 AEAD cipher
@@ -31,6 +56,20 @@ A secure Rust-based tool for bidirectional communication between your terminal a
 
 ## Installation
 
+### Automated (Recommended)
+
+```bash
+./install.sh
+```
+
+This script will:
+- Build the Rust server
+- Set up Python virtual environment
+- Install all dependencies
+- Make scripts executable
+
+### Manual
+
 1. Clone or download this repository
 2. Build the Rust server:
 
@@ -38,13 +77,36 @@ A secure Rust-based tool for bidirectional communication between your terminal a
 cargo build --release
 ```
 
-The compiled binary will be at `target/release/terminal-to-ps.exe`
+3. Set up Python environment:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install cryptography
+```
+
+The compiled binary will be at `target/release/terminal-to-ps` (or `.exe` on Windows)
 
 ## Usage
 
-### Step 1: Start the Rust Server
+### Simple Method (Recommended)
 
-Run the server in your terminal (PowerShell, Windows Terminal, or any terminal on Windows):
+**Start the server:**
+```bash
+./run_server.sh
+```
+
+**Send data from client:**
+```bash
+./run_client.sh ping                    # Test connection
+./run_client.sh send "your message"     # Send text
+```
+
+### Manual Method
+
+**Start the Rust Server:**
+
+Run the server in your terminal:
 
 ```bash
 cargo run --release
@@ -53,7 +115,8 @@ cargo run --release
 Or run the compiled binary:
 
 ```bash
-./target/release/terminal-to-ps.exe
+./target/release/terminal-to-ps      # macOS/Linux
+./target/release/terminal-to-ps.exe  # Windows
 ```
 
 On first run, it will generate an encryption key at `~/.terminal_to_ps_key`. You'll see:
