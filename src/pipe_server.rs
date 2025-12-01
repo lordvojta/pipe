@@ -219,6 +219,7 @@ impl NamedPipeServer {
     }
 }
 
+#[cfg(unix)]
 impl Drop for NamedPipeServer {
     fn drop(&mut self) {
         // Clean up socket file
