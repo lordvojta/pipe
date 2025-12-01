@@ -1,15 +1,13 @@
 #[cfg(windows)]
 use anyhow::{Context, Result};
 #[cfg(windows)]
-use std::io::{Read, Write};
-#[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
 #[cfg(windows)]
-use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT};
+use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT};
 
 #[cfg(windows)]
 const BUFFER_SIZE: u32 = 4096;
@@ -78,11 +76,11 @@ impl NamedPipeServer {
             )
         };
 
-        if let Err(e) = pipe_handle {
-            anyhow::bail!("Failed to create named pipe: {}", e);
+        if pipe_handle == INVALID_HANDLE_VALUE {
+            anyhow::bail!("Failed to create named pipe: {}", std::io::Error::last_os_error());
         }
 
-        Ok(pipe_handle.unwrap())
+        Ok(pipe_handle)
     }
 
     fn handle_connection<F>(&self, pipe_handle: HANDLE, handler: &mut F) -> Result<()>
@@ -96,8 +94,7 @@ impl NamedPipeServer {
         unsafe {
             ReadFile(
                 pipe_handle,
-                Some(buffer.as_mut_ptr() as *mut _),
-                buffer.len() as u32,
+                Some(&mut buffer),
                 Some(&mut bytes_read),
                 None,
             )
@@ -114,8 +111,7 @@ impl NamedPipeServer {
         unsafe {
             WriteFile(
                 pipe_handle,
-                Some(response_data.as_ptr() as *const _),
-                response_data.len() as u32,
+                Some(&response_data),
                 Some(&mut bytes_written),
                 None,
             )
@@ -126,19 +122,106 @@ impl NamedPipeServer {
     }
 }
 
-#[cfg(not(windows))]
-pub struct NamedPipeServer;
+// Unix implementation using Unix domain sockets
+#[cfg(unix)]
+use anyhow::{Context, Result};
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::path::Path;
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+const BUFFER_SIZE: usize = 4096;
+
+#[cfg(unix)]
+pub struct NamedPipeServer {
+    socket_path: String,
+}
+
+#[cfg(unix)]
 impl NamedPipeServer {
-    pub fn new(_pipe_name: impl Into<String>) -> Self {
-        Self
+    pub fn new(socket_path: impl Into<String>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+        }
     }
 
-    pub fn listen<F>(&self, _handler: F) -> anyhow::Result<()>
+    pub fn listen<F>(&self, mut handler: F) -> Result<()>
     where
-        F: FnMut(Vec<u8>) -> anyhow::Result<Vec<u8>>,
+        F: FnMut(Vec<u8>) -> Result<Vec<u8>>,
     {
-        anyhow::bail!("Named pipes are only supported on Windows")
+        println!("Starting Unix domain socket server: {}", self.socket_path);
+
+        // Remove existing socket file if it exists
+        let path = Path::new(&self.socket_path);
+        if path.exists() {
+            std::fs::remove_file(path)
+                .context("Failed to remove existing socket file")?;
+        }
+
+        let listener = UnixListener::bind(&self.socket_path)
+            .context("Failed to bind Unix socket")?;
+
+        println!("Waiting for client connection...");
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    println!("Client connected!");
+                    match self.handle_connection(stream, &mut handler) {
+                        Ok(_) => println!("Connection handled successfully"),
+                        Err(e) => eprintln!("Error handling connection: {}", e),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Connection failed: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_connection<F>(&self, mut stream: UnixStream, handler: &mut F) -> Result<()>
+    where
+        F: FnMut(Vec<u8>) -> Result<Vec<u8>>,
+    {
+        // Read length prefix (4 bytes, big endian)
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf)
+            .context("Failed to read message length")?;
+        let msg_len = u32::from_be_bytes(len_buf) as usize;
+
+        if msg_len > BUFFER_SIZE * 16 {
+            anyhow::bail!("Message too large: {} bytes", msg_len);
+        }
+
+        // Read the message
+        let mut buffer = vec![0u8; msg_len];
+        stream.read_exact(&mut buffer)
+            .context("Failed to read from socket")?;
+
+        // Process the request
+        let response_data = handler(buffer)?;
+
+        // Write length prefix
+        let resp_len = response_data.len() as u32;
+        stream.write_all(&resp_len.to_be_bytes())
+            .context("Failed to write response length")?;
+
+        // Write response
+        stream.write_all(&response_data)
+            .context("Failed to write to socket")?;
+
+        Ok(())
+    }
+}
+
+impl Drop for NamedPipeServer {
+    fn drop(&mut self) {
+        // Clean up socket file
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 }

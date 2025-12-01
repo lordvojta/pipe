@@ -10,7 +10,16 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(windows)]
 const PIPE_NAME: &str = r"\\.\pipe\terminal_to_ps";
+
+#[cfg(unix)]
+fn get_socket_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".terminal_to_ps.sock")
+}
+
 const KEY_FILE: &str = ".terminal_to_ps_key";
 
 struct Server {
@@ -116,11 +125,25 @@ impl Server {
         Ok(encrypted_response)
     }
 
+    #[cfg(windows)]
     fn run(&self) -> Result<()> {
         let pipe_server = NamedPipeServer::new(PIPE_NAME);
 
         println!("\n=== Terminal to PowerShell Bridge ===");
         println!("Pipe: {}", PIPE_NAME);
+        println!("Ready to accept connections...\n");
+
+        pipe_server.listen(|data| self.process_encrypted_request(data))
+    }
+
+    #[cfg(unix)]
+    fn run(&self) -> Result<()> {
+        let socket_path = get_socket_path();
+        let socket_path_str = socket_path.to_string_lossy().to_string();
+        let pipe_server = NamedPipeServer::new(&socket_path_str);
+
+        println!("\n=== Terminal to PowerShell Bridge ===");
+        println!("Socket: {}", socket_path_str);
         println!("Ready to accept connections...\n");
 
         pipe_server.listen(|data| self.process_encrypted_request(data))
