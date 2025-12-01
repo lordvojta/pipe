@@ -1,65 +1,47 @@
-# Terminal to PowerShell Bridge
+# Secure Messenger
 
-Secure local IPC for sharing data between processes. Works on Windows (named pipes) and macOS/Linux (Unix domain sockets).
+Send encrypted messages between devices on your network.
 
-## Quick Start
+## Setup
 
-### Build
-
+### 1. Build (on both devices)
 ```bash
 cargo build --release
 ```
 
-### Run
-
-**Terminal 1 - Start the server:**
+### 2. Start server (on one device)
 ```bash
-# macOS/Linux
 ./target/release/server
-
-# Windows
-.\target\release\server.exe
 ```
+First run creates a key file and prints it. Copy this key to the other device.
 
-**Terminal 2 - Use the client:**
+### 3. Copy the key
+Put the same key in `~/.terminal_to_ps_key` on both devices.
+
+### 4. Send messages
 ```bash
-# macOS/Linux
-./target/release/client ping
-./target/release/client send "Hello!"
-
-# Windows
-.\target\release\client.exe ping
-.\target\release\client.exe send "Hello!"
+# From the other device
+./target/release/client <server-ip>:9876 send "Hello!"
 ```
 
-## Client Commands
+## Commands
 
-| Command | Description |
-|---------|-------------|
-| `client ping` | Test server connection |
-| `client send <text>` | Send text data |
-| `client get <VAR>` | Get environment variable |
-| `client getall` | Get all environment variables |
-| `client set <VAR> <VALUE>` | Set environment variable |
-
-## How It Works
-
-- **Windows**: Uses named pipes (`\\.\pipe\terminal_to_ps`)
-- **macOS/Linux**: Uses Unix domain sockets (`~/.terminal_to_ps.sock`)
-- **Encryption**: ChaCha20-Poly1305 AEAD
-- **Key file**: `~/.terminal_to_ps_key` (auto-generated on first run)
-
-## Project Structure
-
-```
-src/
-├── main.rs        # Server
-├── client.rs      # Client
-├── crypto.rs      # ChaCha20-Poly1305 encryption
-├── protocol.rs    # JSON message types
-└── pipe_server.rs # Platform-specific IPC
+```bash
+client <host:port> ping              # Test connection
+client <host:port> send <message>    # Send message
 ```
 
-## License
+## Example
 
-MIT
+**Mac (server):**
+```bash
+./target/release/server
+# Shows: Listening on port 9876
+```
+
+**Windows (client):**
+```powershell
+.\target\release\client.exe 192.168.1.50:9876 send "Hello from Windows!"
+```
+
+The Mac will display: `>>> MESSAGE: Hello from Windows!`

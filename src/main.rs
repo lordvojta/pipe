@@ -1,26 +1,17 @@
 mod crypto;
-mod pipe_server;
 mod protocol;
 
 use anyhow::{Context, Result};
-use pipe_server::NamedPipeServer;
 use protocol::{Request, Response};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
-#[cfg(windows)]
-const PIPE_NAME: &str = r"\\.\pipe\terminal_to_ps";
-
-#[cfg(unix)]
-fn get_socket_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".terminal_to_ps.sock")
-}
-
 const KEY_FILE: &str = ".terminal_to_ps_key";
+const DEFAULT_PORT: u16 = 9876;
 
 struct Server {
     key: [u8; 32],
@@ -36,7 +27,6 @@ impl Server {
         let key_path = Self::get_key_path()?;
 
         if key_path.exists() {
-            // Load existing key
             let key_hex = fs::read_to_string(&key_path)
                 .context("Failed to read key file")?;
             let key_bytes = hex::decode(key_hex.trim())
@@ -52,15 +42,15 @@ impl Server {
             println!("Loaded encryption key from: {}", key_path.display());
             Ok(key)
         } else {
-            // Generate new key
             let key = crypto::generate_key();
             let key_hex = hex::encode(key);
 
-            fs::write(&key_path, key_hex)
+            fs::write(&key_path, &key_hex)
                 .context("Failed to write key file")?;
 
             println!("Generated new encryption key: {}", key_path.display());
-            println!("IMPORTANT: Copy this key file to your PowerShell client location!");
+            println!("\nIMPORTANT: Copy this key to the other device:");
+            println!("  {}", key_hex);
             Ok(key)
         }
     }
@@ -84,21 +74,18 @@ impl Server {
                 Response::env_vars(vars)
             }
             Request::SetEnv { name, value } => {
-                // Note: This sets the variable in the Rust process
-                // PowerShell will need to handle setting it in its own session
                 env::set_var(&name, &value);
                 Response::success(Some(format!("Environment variable '{}' set", name)))
             }
             Request::SendData { key, data } => {
-                println!("Received data - Key: {}, Data length: {} bytes", key, data.len());
-                Response::success(Some(format!("Data received for key '{}'", key)))
+                println!("\n>>> MESSAGE: {}", data);
+                Response::success(Some(format!("Received: {}", data)))
             }
             Request::Ping => Response::Pong,
         }
     }
 
     fn process_encrypted_request(&self, encrypted_data: Vec<u8>) -> Result<Vec<u8>> {
-        // Decrypt the request
         let request_json = crypto::decrypt(&encrypted_data, &self.key)
             .context("Failed to decrypt request")?;
 
@@ -108,14 +95,8 @@ impl Server {
         let request: Request = serde_json::from_str(&request_str)
             .context("Failed to parse request JSON")?;
 
-        println!("Request: {:?}", request);
-
-        // Handle the request
         let response = self.handle_request(request);
 
-        println!("Response: {:?}", response);
-
-        // Serialize and encrypt response
         let response_json = serde_json::to_string(&response)
             .context("Failed to serialize response")?;
 
@@ -125,32 +106,64 @@ impl Server {
         Ok(encrypted_response)
     }
 
-    #[cfg(windows)]
-    fn run(&self) -> Result<()> {
-        let pipe_server = NamedPipeServer::new(PIPE_NAME);
+    fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
+        let peer = stream.peer_addr().ok();
 
-        println!("\n=== Terminal to PowerShell Bridge ===");
-        println!("Pipe: {}", PIPE_NAME);
-        println!("Ready to accept connections...\n");
+        // Read length prefix (4 bytes)
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf)?;
+        let msg_len = u32::from_be_bytes(len_buf) as usize;
 
-        pipe_server.listen(|data| self.process_encrypted_request(data))
+        // Read message
+        let mut buffer = vec![0u8; msg_len];
+        stream.read_exact(&mut buffer)?;
+
+        // Process
+        let response = self.process_encrypted_request(buffer)?;
+
+        // Write response length + data
+        stream.write_all(&(response.len() as u32).to_be_bytes())?;
+        stream.write_all(&response)?;
+
+        if let Some(addr) = peer {
+            println!("Handled request from {}", addr);
+        }
+
+        Ok(())
     }
 
-    #[cfg(unix)]
-    fn run(&self) -> Result<()> {
-        let socket_path = get_socket_path();
-        let socket_path_str = socket_path.to_string_lossy().to_string();
-        let pipe_server = NamedPipeServer::new(&socket_path_str);
+    fn run(&self, port: u16) -> Result<()> {
+        let addr = format!("0.0.0.0:{}", port);
+        let listener = TcpListener::bind(&addr)
+            .with_context(|| format!("Failed to bind to {}", addr))?;
 
-        println!("\n=== Terminal to PowerShell Bridge ===");
-        println!("Socket: {}", socket_path_str);
-        println!("Ready to accept connections...\n");
+        println!("\n=== Secure Messenger Server ===");
+        println!("Listening on port {}", port);
+        println!("Waiting for connections...\n");
 
-        pipe_server.listen(|data| self.process_encrypted_request(data))
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    if let Err(e) = self.handle_connection(stream) {
+                        eprintln!("Error: {}", e);
+                    }
+                }
+                Err(e) => eprintln!("Connection failed: {}", e),
+            }
+        }
+
+        Ok(())
     }
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let port = if args.len() > 1 {
+        args[1].parse().unwrap_or(DEFAULT_PORT)
+    } else {
+        DEFAULT_PORT
+    };
+
     let server = Server::new()?;
-    server.run()
+    server.run(port)
 }
